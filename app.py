@@ -76,19 +76,33 @@ def create_chat_completion(
 # Function to fetch article details with retry logic
 async def fetch_article_details(session: aiohttp.ClientSession, id: str, details_url: str, abstracts_url: str, semaphore: asyncio.Semaphore) -> Tuple[str, Dict, str]:
     async with semaphore:
-        try:
-            async with session.get(details_url) as details_response:
-                details_response.raise_for_status()
-                details_data = await details_response.json()
-            
-            async with session.get(abstracts_url) as abstracts_response:
-                abstracts_response.raise_for_status()
-                abstracts_data = await abstracts_response.text()
-            
-            return id, details_data, abstracts_data
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            print(f"Error fetching article details for ID {id}: {e}")
-            return id, {}, ""
+        for attempt in range(3):  # Retry up to 3 times for rate limit errors
+            try:
+                async with session.get(details_url) as details_response:
+                    details_response.raise_for_status()
+                    details_data = await details_response.json()
+                
+                async with session.get(abstracts_url) as abstracts_response:
+                    abstracts_response.raise_for_status()
+                    abstracts_data = await abstracts_response.text()
+                
+                # Check if details_data is not empty
+                if details_data and 'result' in details_data:
+                    return id, details_data, abstracts_data
+                else:
+                    print(f"No details found for ID {id}, attempt {attempt + 1}")
+
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:  # Handle rate limit error
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    raise
+            except Exception as e:
+                if attempt == 2:
+                    st.error(f"Error fetching details for ID {id}: {e}")
+                    return id, {}, ''
+                else:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff on general errors
 
 # Function to extract abstract from XML
 async def extract_abstract_from_xml(xml_data: str, pmid: str) -> str:
@@ -166,7 +180,7 @@ async def pubmed_abstracts(search_terms: str, search_type: str = "all", max_resu
             results = await asyncio.gather(*tasks)
 
             for id, details_data, abstracts_data in results:
-                if 'result' in details_data and str(id) in details_data['result']:
+                if details_data and 'result' in details_data and str(id) in details_data['result']:
                     article = details_data['result'][str(id)]
                     year = article['pubdate'].split(" ")[0]
                     if year.isdigit():
@@ -181,7 +195,7 @@ async def pubmed_abstracts(search_terms: str, search_type: str = "all", max_resu
                             })
                             unique_urls.add(article_url)
                 else:
-                    st.error(f"Details not available for ID {id}")
+                    st.error(f"Details not available for ID {id}. Details data: {details_data}")
 
             while len(articles) < max_results:
                 additional_ids = await fetch_additional_results(session, search_query, max_results, len(articles))
@@ -197,7 +211,7 @@ async def pubmed_abstracts(search_terms: str, search_type: str = "all", max_resu
                 additional_results = await asyncio.gather(*additional_tasks)
 
                 for id, details_data, abstracts_data in additional_results:
-                    if 'result' in details_data and str(id) in details_data['result']:
+                    if details_data and 'result' in details_data and str(id) in details_data['result']:
                         article = details_data['result'][str(id)]
                         year = article['pubdate'].split(" ")[0]
                         if year.isdigit():
@@ -233,26 +247,74 @@ async def optimize_query(search_terms: str) -> str:
     optimized_query = response.choices[0].message.content.strip()
     return optimized_query
 
+def check_password() -> bool:
+    """
+    Check if the entered password is correct and manage login state.
+    Also resets the app when a user successfully logs in.
+    """
+    # Early return if st.secrets["docker"] == "docker"
+    if st.secrets["docker"] == "docker":
+        st.session_state.password_correct = True
+        return True
+    # Initialize session state variables
+    if "password" not in st.session_state:
+        st.session_state.password = ""
+    if "password_correct" not in st.session_state:
+        st.session_state.password_correct = False
+    if "login_attempts" not in st.session_state:
+        st.session_state.login_attempts = 0
+
+    def password_entered() -> None:
+        """Callback function when password is entered."""
+        if st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            st.session_state.login_attempts = 0
+            # Reset the app
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+            st.session_state.login_attempts += 1
+
+    # Check if password is correct
+    if not st.session_state["password_correct"]:
+        st.text_input("Password", type="password", on_change=password_entered, key='password')
+        
+        if st.session_state.login_attempts > 0:
+            st.error(f"😕 Password incorrect. Attempts: {st.session_state.login_attempts}")
+        
+        st.write("*Please contact David Liebovitz, MD if you need an updated password for access.*")
+        return False
+
+    return True
+
+
 # Main function to run the Streamlit app
 def search_pubmed_page():
     st.title('PubMed Query Formulator')
-    search_terms = st.text_input('Enter your question:')
-    max_results = st.slider('Maximum number of results:', 1, 20, 5)
-    years_back = st.slider('Years back to search:', 1, 10, 3)
-    search_type = st.selectbox('Search type:', ['all', 'title', 'abstract'], index=0)
-    submit = st.button('Search')
+    
+    
+    if check_password():
+        search_terms = st.text_input('Enter your question:')
+        max_results = st.slider('Maximum number of results:', 1, 20, 5)
+        years_back = st.slider('Years back to search:', 1, 10, 3)
+        search_type = st.selectbox('Search type:', ['all', 'title', 'abstract'], index=0)
+        submit = st.button('Search')
 
-    if submit and search_terms:
-        with st.spinner('Optimizing query and searching PubMed...'):
-            optimized_query = asyncio.run(optimize_query(search_terms))
-            st.markdown(f"**Optimized Query:** {optimized_query}")
-            articles, urls = asyncio.run(pubmed_abstracts(optimized_query, search_type, max_results, years_back))
-            if articles:
-                for article in articles:
-                    st.write(f"### [{article['title']}]({article['link']})")
-                    st.write(f"**Year:** {article['year']}")
-                    st.write(f"**Abstract:** {article['abstract']}")
-            else:
-                st.write("No results found.")
+        if submit and search_terms:
+            with st.spinner('Optimizing query and searching PubMed...'):
+                optimized_query = asyncio.run(optimize_query(search_terms))
+                st.markdown(f"**Optimized Query:** {optimized_query}")
+                pubmed_link = "https://pubmed.ncbi.nlm.nih.gov/?term=" + optimized_query.replace(" ", "+")
+                                # st.write("[View PubMed Search Results]({pubmed_link})")
+
+                st.page_link(pubmed_link, label="Click here to view in PubMed", icon="📚")
+                articles, urls = asyncio.run(pubmed_abstracts(optimized_query, search_type, max_results, years_back))
+                if articles:
+                    for article in articles:
+                        st.write(f"### [{article['title']}]({article['link']})")
+                        st.write(f"**Year:** {article['year']}")
+                        st.write(f"**Abstract:** {article['abstract']}")
+                else:
+                    st.write("No results found.")
 
 search_pubmed_page()
