@@ -86,16 +86,16 @@ async def fetch_article_details(session: aiohttp.ClientSession, id: str, details
                     abstracts_response.raise_for_status()
                     abstracts_data = await abstracts_response.text()
                 
-                # Check if details_data is not empty
                 if details_data and 'result' in details_data:
                     return id, details_data, abstracts_data
                 else:
-                    print(f"No details found for ID {id}, attempt {attempt + 1}")
+                    st.error(f"No details found for ID {id}, attempt {attempt + 1}")
 
             except aiohttp.ClientResponseError as e:
                 if e.status == 429:  # Handle rate limit error
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 else:
+                    st.error(f"ClientResponseError for ID {id}: {e}")
                     raise
             except Exception as e:
                 if attempt == 2:
@@ -103,6 +103,9 @@ async def fetch_article_details(session: aiohttp.ClientSession, id: str, details
                     return id, {}, ''
                 else:
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff on general errors
+
+    return id, {}, ''
+
 
 # Function to extract abstract from XML
 async def extract_abstract_from_xml(xml_data: str, pmid: str) -> str:
@@ -125,9 +128,10 @@ async def extract_abstract_from_xml(xml_data: str, pmid: str) -> str:
                                 abstract_texts.append(text)
                         return " ".join(abstract_texts).strip()
         return "No abstract available"
-    except ET.ParseError:
-        print(f"Error parsing XML for PMID {pmid}")
+    except ET.ParseError as e:
+        st.error(f"Error parsing XML for PMID {pmid}: {e}")
         return "Error extracting abstract"
+
 
 # Function to fetch additional results
 async def fetch_additional_results(session: aiohttp.ClientSession, search_query: str, max_results: int, current_count: int) -> List[str]:
@@ -144,10 +148,11 @@ async def fetch_additional_results(session: aiohttp.ClientSession, search_query:
         return []
 
 # Function to fetch PubMed abstracts
-async def pubmed_abstracts(search_terms: str, search_type: str = "all", max_results: int = 5, years_back: int = 3) -> Tuple[List[Dict[str, str]], List[str]]:
+async def pubmed_abstracts(search_terms: str, search_type: str = "all", max_results: int = 5, years_back: int = 3, human_only: bool = False) -> Tuple[List[Dict[str, str]], List[str]]:
     current_year = datetime.now().year
     start_year = current_year - years_back
-    search_query = f"{search_terms}+AND+{start_year}[PDAT]:{current_year}[PDAT]"
+    human_filter = "+AND+humans[MeSH+Terms]" if human_only else ""
+    search_query = f"{search_terms}+AND+{start_year}[PDAT]:{current_year}[PDAT]{human_filter}"
     url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={search_query}&sort=relevance&retmode=json&retmax={max_results}&api_key={st.secrets['pubmed_api_key']}"
 
     async with aiohttp.ClientSession() as session:
@@ -287,6 +292,17 @@ def check_password() -> bool:
 
     return True
 
+if "optimized_query" not in st.session_state:
+    st.session_state.optimized_query = ""
+
+if "edited_query" not in st.session_state:
+    st.session_state.edited_query = ""
+    
+if "original_query" not in st.session_state:
+    st.session_state.original_query = ""
+    
+if "articles" not in st.session_state:
+    st.session_state.articles = []
 
 # Main function to run the Streamlit app
 def search_pubmed_page():
@@ -294,21 +310,55 @@ def search_pubmed_page():
     
     
     if check_password():
-        search_terms = st.text_input('Enter your question:')
-        max_results = st.slider('Maximum number of results:', 1, 20, 5)
-        years_back = st.slider('Years back to search:', 1, 10, 3)
-        search_type = st.selectbox('Search type:', ['all', 'title', 'abstract'], index=0)
-        submit = st.button('Search')
+        st.session_state.original_query = st.text_input('Enter your question:')
+        
 
-        if submit and search_terms:
-            with st.spinner('Optimizing query and searching PubMed...'):
-                optimized_query = asyncio.run(optimize_query(search_terms))
-                st.markdown(f"**Optimized Query:** {optimized_query}")
-                pubmed_link = "https://pubmed.ncbi.nlm.nih.gov/?term=" + optimized_query.replace(" ", "+")
-                                # st.write("[View PubMed Search Results]({pubmed_link})")
+        submit = st.button('Prepare Your Search')
+        if submit and st.session_state.original_query:
+            st.session_state.edited_query = ""
+            with st.spinner('Optimizing query...'):
+                        
+                optimized_query = asyncio.run(optimize_query(st.session_state.original_query))
+                st.session_state.optimized_query = optimized_query
+        if st.session_state.optimized_query:
+            st.write("### PubMed Search Terms:")
+            st.write(st.session_state.optimized_query)
+            if st.checkbox("Edit search terms"):
+                st.session_state.edited_query = st.text_area('Edit the optimized query:', value=st.session_state.optimized_query, height=400)
+            else:
+                st.session_state.edited_query = st.session_state.optimized_query
+                
+                # st.markdown(f"**Optimized Query:** {optimized_query}")
+        if st.session_state.edited_query:
+            pubmed_link = "https://pubmed.ncbi.nlm.nih.gov/?term=" + st.session_state.edited_query.replace(" ", "+")
+            st.page_link(pubmed_link, label="**Click here to view in PubMed**", icon="📚")
 
-                st.page_link(pubmed_link, label="Click here to view in PubMed", icon="📚")
-                articles, urls = asyncio.run(pubmed_abstracts(optimized_query, search_type, max_results, years_back))
+            st.divider()
+            st.write("**Or, perform your search here:**")
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                start_pubmed_search = st.button("Search PubMed Here 😊")
+            with col2:
+                with st.popover("Options for Searching Here"):
+                    search_type = st.selectbox('Search type:', ['all', 'title', 'abstract'], index=0)
+                    
+                    max_results = st.slider('Maximum number of results:', 1, 20, 5)
+
+                    years_back = st.slider('Years back to search:', 1, 10, 3)
+
+                    human_only = st.checkbox('Limit to Human Studies', value=False)
+                
+            if start_pubmed_search:
+                st.session_state.articles, urls = asyncio.run(pubmed_abstracts(st.session_state.edited_query, search_type, max_results, years_back, human_only))
+                if st.session_state.articles:
+                    with st.expander("Search used"):
+                        st.write(f"**Original Query:** {st.session_state.original_query}")
+                        st.write(f"**Edited Query:** {st.session_state.edited_query}")
+                        st.write(f"**Search Type:** {search_type}")
+                        st.write(f"**Maximum Results:** {max_results}")
+                        st.write(f"**Years Back:** {years_back}")
+                        st.write(f"**Human Studies Only:** {human_only}")
+                articles = st.session_state.articles
                 if articles:
                     for article in articles:
                         st.write(f"### [{article['title']}]({article['link']})")
@@ -316,5 +366,6 @@ def search_pubmed_page():
                         st.write(f"**Abstract:** {article['abstract']}")
                 else:
                     st.write("No results found.")
+
 
 search_pubmed_page()
