@@ -311,6 +311,7 @@ def search_pubmed_page():
     
     if check_password():
         st.session_state.original_query = st.text_input('Enter your question:')
+        scope = st.radio('Select the approach of your search (note - broad may not always returns more total results):', ['narrow; restrict for high relevance', 'broad; expand for related subjects'], index=0, horizontal=True)
         
 
         submit = st.button('Prepare Your Search')
@@ -318,7 +319,7 @@ def search_pubmed_page():
             st.session_state.edited_query = ""
             with st.spinner('Optimizing query...'):
                         
-                optimized_query = asyncio.run(optimize_query(st.session_state.original_query))
+                optimized_query = asyncio.run(optimize_query(f'Scope: {scope} Question: {st.session_state.original_query}'))
                 st.session_state.optimized_query = optimized_query
         if st.session_state.optimized_query:
             st.write("### PubMed Search Terms:")

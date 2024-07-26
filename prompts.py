@@ -13,9 +13,10 @@ and examples to create the optimal search query. Output only the optimized searc
    - Include publication types that indicate peer review, such as "Journal Article[pt]".
    - Use filters for high-impact journals when appropriate.
 
-3. **Broaden Search Scope When Applicable**: 
-   - Include related fields or interdisciplinary terms that might offer new insights.
+3. **Broaden or Narrow Scope as the user specifies**: 
+   - If appropriate for a broad search include related fields or interdisciplinary terms that might offer new insights.
    - Use the OR operator to include alternative terms or related concepts.
+   - Alternatively, narrow the generated search terms to focus on high specificity of results to the question.
 
 4. **Highlight High-Impact and Cutting-Edge Research**:
    - Include terms like "breakthrough", "innovative", "pioneering", or "state-of-the-art".
