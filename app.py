@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Tuple
 from openai import OpenAI
-from prompts import main_pubmed_prompt
+from prompts import main_pubmed_prompt, clinical_trials_prompt, review_type_prompt
 import xml.etree.ElementTree as ET
 
 # Function to create chat completion
@@ -243,9 +243,9 @@ async def pubmed_abstracts(search_terms: str, search_type: str = "all", max_resu
     return articles[:max_results], list(unique_urls)
 
 # Function to optimize the query using GPT-4o
-async def optimize_query(search_terms: str) -> str:
+async def optimize_query(system_prompt=main_pubmed_prompt, search_terms=None):
     messages = [
-        {"role": "system", "content": main_pubmed_prompt},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": search_terms}
     ]
     response = create_chat_completion(messages)
@@ -311,28 +311,34 @@ def search_pubmed_page():
     
     if check_password():
         st.session_state.original_query = st.text_input('Enter your question:')
-        scope = st.radio('Select the approach of your search (note - broad may not always returns more total results):', ['narrow; restrict for high relevance', 'broad; expand for related subjects'], index=0, horizontal=True)
-        
+        search_target = st.radio('Select the target of your search (note - broad may not always returns more total results):', ['general use', 'relevant clinical trials', 'review types of articles'] , index=0, horizontal=True)
+        if search_target == 'relevant clinical trials':
+            optimize_prompt = clinical_trials_prompt
+        elif search_target == 'review types of articles':
+            optimize_prompt = review_type_prompt
+        elif search_target == 'general use':
+            optimize_prompt = main_pubmed_prompt
 
         submit = st.button('Prepare Your Search')
         if submit and st.session_state.original_query:
             st.session_state.edited_query = ""
             with st.spinner('Optimizing query...'):
                         
-                optimized_query = asyncio.run(optimize_query(f'Scope: {scope} Question: {st.session_state.original_query}'))
+                optimized_query = asyncio.run(optimize_query(system_prompt=optimize_prompt, search_terms=st.session_state.original_query))
                 st.session_state.optimized_query = optimized_query
         if st.session_state.optimized_query:
-            st.write("### PubMed Search Terms:")
-            st.write(st.session_state.optimized_query)
-            if st.checkbox("Edit search terms"):
-                st.session_state.edited_query = st.text_area('Edit the optimized query:', value=st.session_state.optimized_query, height=400)
-            else:
-                st.session_state.edited_query = st.session_state.optimized_query
+            with st.container(border=True):
+                st.write("### PubMed Search Terms:")
+                st.write(st.session_state.optimized_query)
+                if st.checkbox("Edit search terms"):
+                    st.session_state.edited_query = st.text_area('Edit the optimized query:', value=st.session_state.optimized_query, height=400)
+                else:
+                    st.session_state.edited_query = st.session_state.optimized_query
                 
                 # st.markdown(f"**Optimized Query:** {optimized_query}")
         if st.session_state.edited_query:
             pubmed_link = "https://pubmed.ncbi.nlm.nih.gov/?term=" + st.session_state.edited_query.replace(" ", "+")
-            st.page_link(pubmed_link, label="**Click here to view in PubMed**", icon="📚")
+            st.page_link(pubmed_link, label="**Click ➡️ HERE to view in PubMed**", icon="📚")
 
             st.divider()
             st.write("**Or, perform your search here:**")
@@ -351,14 +357,14 @@ def search_pubmed_page():
                 
             if start_pubmed_search:
                 st.session_state.articles, urls = asyncio.run(pubmed_abstracts(st.session_state.edited_query, search_type, max_results, years_back, human_only))
-                if st.session_state.articles:
-                    with st.expander("Search used"):
-                        st.write(f"**Original Query:** {st.session_state.original_query}")
-                        st.write(f"**Edited Query:** {st.session_state.edited_query}")
-                        st.write(f"**Search Type:** {search_type}")
-                        st.write(f"**Maximum Results:** {max_results}")
-                        st.write(f"**Years Back:** {years_back}")
-                        st.write(f"**Human Studies Only:** {human_only}")
+                # if st.session_state.articles:
+                #     with st.expander("Search used"):
+                #         st.write(f"**Original Query:** {st.session_state.original_query}")
+                #         st.write(f"**Edited Query:** {st.session_state.edited_query}")
+                #         st.write(f"**Search Type:** {search_type}")
+                #         st.write(f"**Maximum Results:** {max_results}")
+                #         st.write(f"**Years Back:** {years_back}")
+                #         st.write(f"**Human Studies Only:** {human_only}")
                 articles = st.session_state.articles
                 if articles:
                     for article in articles:
